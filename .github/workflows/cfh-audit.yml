@@ -1,0 +1,19 @@
+name: CFH Search upstream dependency assessment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: e89fff89ac9af12e8d4ce9d5fd07beb408ca730f
+          persist-credentials: false
+      - name: Install OSV Scanner
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
+      - name: Audit upstream release dependencies
+        run: |
+          "$(go env GOPATH)/bin/osv-scanner" scan source --recursive .
