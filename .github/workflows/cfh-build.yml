@@ -74,7 +74,7 @@ jobs:
           foreach($name in @('rg.exe','CFH-Search.ps1','CFH-Search.cmd','CFH-FORK.md','LICENSE-MIT','UNLICENSE','COPYING','THIRD-PARTY.txt')) { if (!(Test-Path "$dir\$name")) { throw "Installed file missing: $name" } }
           $testFolder="$env:RUNNER_TEMP\search test folder"; New-Item -ItemType Directory -Force $testFolder | Out-Null
           [IO.File]::WriteAllText("$testFolder\sample.txt",'A real needle is here')
-          $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -WindowStyle Hidden -PassThru
+          $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -PassThru
           try {
             Add-Type -AssemblyName UIAutomationClient
             $window=$null
@@ -84,7 +84,7 @@ jobs:
               $window=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
               if($window) { break }; Start-Sleep -Seconds 1
             }
-            if(-not $window) { throw 'Search window not available' }
+            if(-not $window) { throw ("Search window not available; process id=$($app.Id) title=$($app.MainWindowTitle) handle=$($app.MainWindowHandle)") }
             function Find-Control($name) { $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name); return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$c) }
             $folder=Find-Control 'Folder'; $query=Find-Control 'Text to find'; $button=Find-Control 'Search'; $output=Find-Control 'Search results'
             if(-not $folder -or -not $query -or -not $button -or -not $output) { throw 'Required accessible controls unavailable' }
