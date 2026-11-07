@@ -76,41 +76,53 @@ jobs:
           [IO.File]::WriteAllText("$testFolder\sample.txt",'A real needle is here')
           $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -PassThru
           try {
-            Add-Type -AssemblyName UIAutomationClient
-            $window=$null
-            for($i=0;$i -lt 30;$i++) {
-              if($app.HasExited) { throw 'App exited during startup' }
-              $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id); $titleCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,"CFH Search"); $cond=New-Object System.Windows.Automation.AndCondition($pidCond,$titleCond)
-              $window=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
-              if($window) { break }; Start-Sleep -Seconds 1
-            }
-            if(-not $window) { throw ("Search window not available; process id=$($app.Id) title=$($app.MainWindowTitle) handle=$($app.MainWindowHandle)") }
-            function Find-Control($name) { $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name); return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$c) }
-            for($i=0;$i -lt 20;$i++) { $folder=Find-Control 'Folder'; $query=Find-Control 'Text to find'; $button=Find-Control 'Search'; $output=Find-Control 'Search results'; if($folder -and $query -and $button -and $output) { break }; Start-Sleep -Seconds 1 }
-            if(-not $folder -or -not $query -or -not $button -or -not $output) { $all=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition); $names=@(); foreach($x in $all) { $names += ('['+$x.Current.Name+'] '+$x.Current.ControlType.ProgrammaticName) }; throw ('Required accessible controls unavailable. '+($names -join '; ')) }
-            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($testFolder)
-            $query.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('needle')
-            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            $ok=$false
-            for($i=0;$i -lt 30;$i++) { $value=$output.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value; if($value -match 'sample\.txt:1:A real needle is here') { $ok=$true; break }; Start-Sleep -Seconds 1 }
-            if(-not $ok) { throw 'Expected GUI search result missing' }
+            Add-Type @"
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class NativeSearchTest {
+            public delegate bool Callback(IntPtr h, IntPtr p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls,string title);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,Callback c,IntPtr p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,string l);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,StringBuilder l);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
+            [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+            public static List<IntPtr> Children(IntPtr h) { var list=new List<IntPtr>(); EnumChildWindows(h,(x,p)=>{ list.Add(x); return true; },IntPtr.Zero); return list; }
+            public static string Class(IntPtr h) { var b=new StringBuilder(256); GetClassName(h,b,b.Capacity); return b.ToString(); }
+            public static string Text(IntPtr h) { var b=new StringBuilder(1000002); SendMessage(h,13,(IntPtr)b.Capacity,b); return b.ToString(); }
+            public static void Set(IntPtr h,string s) { SendMessage(h,12,IntPtr.Zero,s); }
+            public static void Click(IntPtr h) { SendMessage(h,245,IntPtr.Zero,IntPtr.Zero); }
+          }
+          "@
+            $window=[IntPtr]::Zero
+            for($i=0;$i -lt 30;$i++) { if($app.HasExited){throw 'App exited during startup'}; $window=[NativeSearchTest]::FindWindow($null,'CFH Search'); if($window -ne [IntPtr]::Zero){break}; Start-Sleep -Seconds 1 }
+            if($window -eq [IntPtr]::Zero){throw 'Search form missing'}
+            $children=[NativeSearchTest]::Children($window)
+            $edits=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'EDIT' })
+            $buttons=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'BUTTON' })
+            $button=$buttons | Where-Object { [NativeSearchTest]::Text($_) -eq 'Search' } | Select-Object -First 1
+            if($edits.Count -ne 3 -or -not $button) { throw "Unexpected controls: edits=$($edits.Count), buttons=$($buttons.Count)" }
+            $folder=$edits[0]; $query=$edits[1]; $output=$edits[2]
+            [NativeSearchTest]::Set($folder,$testFolder); [NativeSearchTest]::Set($query,'needle'); [NativeSearchTest]::Click($button)
+            function Wait-Search { for($i=0;$i -lt 60;$i++) { Start-Sleep -Seconds 1; if([NativeSearchTest]::IsWindowEnabled($button)) { return } }; throw 'Search did not finish' }
+            Wait-Search
+            if([NativeSearchTest]::Text($output) -notmatch 'sample\.txt:1:A real needle is here'){ throw 'Expected GUI search result missing' }
             [IO.File]::WriteAllText("$testFolder\long.txt", ('needle' + ('x' * 1200000)))
-            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            $done=$false
-            for($i=0;$i -lt 60;$i++) { Start-Sleep -Seconds 1; if($button.Current.IsEnabled) { $done=$true; break } }
-            if(-not $done) { throw 'Large-line search did not finish' }
-            $value=$output.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
-            if($value.Length -gt 1000000 -or $value.Length -lt 999000) { throw "Output cap failed: $($value.Length)" }
-            if(-not (Find-Control 'Search finished; results limited to 1 million characters.')) { throw 'Truncation notice missing' }
-            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue("$testFolder\missing")
-            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            if(-not (Find-Control 'Choose an existing folder.')) { throw 'Invalid-folder feedback missing' }
-            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($testFolder)
-            $query.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('nothing matches this query 735')
-            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            $done=$false
-            for($i=0;$i -lt 30;$i++) { Start-Sleep -Seconds 1; if($button.Current.IsEnabled) { $done=$true; break } }
-            if(-not $done -or -not (Find-Control 'No matches found.')) { throw 'No-match recovery failed' }
+            [NativeSearchTest]::Click($button); Wait-Search
+            $value=[NativeSearchTest]::Text($output)
+            if($value.Length -gt 1000000 -or $value.Length -lt 999000){ throw "Output cap failed: $($value.Length)" }
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'Search finished; results limited to 1 million characters.'){ throw 'Truncation notice missing' }
+            [NativeSearchTest]::Set($folder,"$testFolder\missing"); [NativeSearchTest]::Click($button)
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'Choose an existing folder.'){ throw 'Invalid-folder feedback missing' }
+            [NativeSearchTest]::Set($folder,$testFolder); [NativeSearchTest]::Set($query,'nothing matches this query 735'); [NativeSearchTest]::Click($button); Wait-Search
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'No matches found.'){ throw 'No-match recovery failed' }
             Write-Output 'LARGE LINE BOUND AND ERROR RECOVERY VERIFIED'
             Write-Output 'INSTALLED GUI SEARCH VERIFIED'
           } finally { if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
