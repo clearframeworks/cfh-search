@@ -13,16 +13,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/clearframeworks/cfh-search/actions/artifacts/13582543648/zip > "$RUNNER_TEMP/artifact.zip"
+          gh api repos/clearframeworks/cfh-search/actions/artifacts/13583034911/zip > "$RUNNER_TEMP/artifact.zip"
           unzip -q "$RUNNER_TEMP/artifact.zip" -d "$RUNNER_TEMP/package"
-          echo '97ccaf8f667f3eea15199294eeca94885cf1512363a19c16fc8d1f162de77fef  '"$RUNNER_TEMP/package/CFH-Search-Setup.exe" | sha256sum -c -
+          echo '1f33f7f495ef6b5f39e83da01cb4c3a7fdbb7a6f8275a7a7f2520d2cd14d6e43  '"$RUNNER_TEMP/package/CFH-Search-Setup.exe" | sha256sum -c -
           cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
           CFH Search is a free Windows app for finding literal text in files within a selected folder. It uses ripgrep 15.2.0 by Andrew Gallant and contributors, with a CFH graphical interface. Search reads files without editing them. Hidden, ignored, and binary files are excluded by ripgrep's defaults; results are limited to one million characters.
 
-          Download and run `CFH-Search-Setup.exe` to install for the current Windows user. The installer is unsigned, so Windows may show an unknown-publisher warning. The application requires Windows PowerShell and does not send searches to an online service.
+          Download and run `CFH-Search-Setup.exe` to install for the current Windows user. The installer is unsigned, so Windows may show an unknown-publisher warning. The application requires Windows PowerShell and does not send searches to an online service. A PowerShell console remains open while the app runs.
 
-          This release was built from commit `a642f711421a5561d6e2c7f6f8f59c70050ea4fb`. Remote Windows checks covered installation, text search, long-result limits, invalid folders, stopping and restarting a search, and uninstalling. These checks do not guarantee the software is free of vulnerabilities or malware. The installer includes upstream and third-party license notices; ripgrep is available under the MIT License or the Unlicense.
+          This release was built from commit `4c29da767bb6efc99a1e807579c66c784cc2bf5b`. Remote Windows checks covered installation, text search, long-result limits, invalid folders, stopping and restarting a search, and uninstalling. These checks do not guarantee the software is free of vulnerabilities or malware. The installer includes upstream and third-party license notices; ripgrep is available under the MIT License or the Unlicense.
 
-          Installer SHA-256: `97ccaf8f667f3eea15199294eeca94885cf1512363a19c16fc8d1f162de77fef`.
+          Installer SHA-256: `1f33f7f495ef6b5f39e83da01cb4c3a7fdbb7a6f8275a7a7f2520d2cd14d6e43`.
           NOTES
-          gh release create cfh-search-0.1.0 "$RUNNER_TEMP/package/CFH-Search-Setup.exe" --repo clearframeworks/cfh-search --target a642f711421a5561d6e2c7f6f8f59c70050ea4fb --draft --title 'CFH Search 0.1.0' --notes-file "$RUNNER_TEMP/notes.md"
+          gh release edit cfh-search-0.1.0 --repo clearframeworks/cfh-search --target 4c29da767bb6efc99a1e807579c66c784cc2bf5b --notes-file "$RUNNER_TEMP/notes.md"
+          gh release upload cfh-search-0.1.0 "$RUNNER_TEMP/package/CFH-Search-Setup.exe" --repo clearframeworks/cfh-search --clobber
