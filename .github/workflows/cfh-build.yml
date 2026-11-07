@@ -94,6 +94,24 @@ jobs:
             $ok=$false
             for($i=0;$i -lt 30;$i++) { $value=$output.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value; if($value -match 'sample\.txt:1:A real needle is here') { $ok=$true; break }; Start-Sleep -Seconds 1 }
             if(-not $ok) { throw 'Expected GUI search result missing' }
+            [IO.File]::WriteAllText("$testFolder\long.txt", ('needle' + ('x' * 1200000)))
+            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $done=$false
+            for($i=0;$i -lt 60;$i++) { Start-Sleep -Seconds 1; if($button.Current.IsEnabled) { $done=$true; break } }
+            if(-not $done) { throw 'Large-line search did not finish' }
+            $value=$output.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+            if($value.Length -gt 1000000 -or $value.Length -lt 999000) { throw "Output cap failed: $($value.Length)" }
+            if(-not (Find-Control 'Search finished; results limited to 1 million characters.')) { throw 'Truncation notice missing' }
+            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue("$testFolder\missing")
+            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            if(-not (Find-Control 'Choose an existing folder.')) { throw 'Invalid-folder feedback missing' }
+            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($testFolder)
+            $query.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('nothing matches this query 735')
+            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $done=$false
+            for($i=0;$i -lt 30;$i++) { Start-Sleep -Seconds 1; if($button.Current.IsEnabled) { $done=$true; break } }
+            if(-not $done -or -not (Find-Control 'No matches found.')) { throw 'No-match recovery failed' }
+            Write-Output 'LARGE LINE BOUND AND ERROR RECOVERY VERIFIED'
             Write-Output 'INSTALLED GUI SEARCH VERIFIED'
           } finally { if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
           $uninstaller=Get-ChildItem "$dir\unins*.exe" | Select-Object -First 1
