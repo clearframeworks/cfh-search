@@ -1,0 +1,14 @@
+name: Verify public CFH Search download
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch public asset without credentials
+        run: |
+          set -euo pipefail
+          curl -fLsS 'https://github.com/clearframeworks/cfh-search/releases/download/cfh-search-0.1.0/CFH-Search-Setup.exe' -o "$RUNNER_TEMP/setup.exe"
+          echo '1f33f7f495ef6b5f39e83da01cb4c3a7fdbb7a6f8275a7a7f2520d2cd14d6e43  '"$RUNNER_TEMP/setup.exe" | sha256sum -c -
+          echo 'PUBLIC DOWNLOAD VERIFIED'
