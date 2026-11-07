@@ -86,8 +86,8 @@ jobs:
             }
             if(-not $window) { throw ("Search window not available; process id=$($app.Id) title=$($app.MainWindowTitle) handle=$($app.MainWindowHandle)") }
             function Find-Control($name) { $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name); return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$c) }
-            $folder=Find-Control 'Folder'; $query=Find-Control 'Text to find'; $button=Find-Control 'Search'; $output=Find-Control 'Search results'
-            if(-not $folder -or -not $query -or -not $button -or -not $output) { throw 'Required accessible controls unavailable' }
+            for($i=0;$i -lt 20;$i++) { $folder=Find-Control 'Folder'; $query=Find-Control 'Text to find'; $button=Find-Control 'Search'; $output=Find-Control 'Search results'; if($folder -and $query -and $button -and $output) { break }; Start-Sleep -Seconds 1 }
+            if(-not $folder -or -not $query -or -not $button -or -not $output) { $all=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition); $names=@(); foreach($x in $all) { $names += ('['+$x.Current.Name+'] '+$x.Current.ControlType.ProgrammaticName) }; throw ('Required accessible controls unavailable. '+($names -join '; ')) }
             $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($testFolder)
             $query.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('needle')
             $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
