@@ -14,7 +14,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/clearframeworks/cfh-search/actions/artifacts/13582543648/zip > "$env:RUNNER_TEMP\artifact.zip"
+          gh api repos/clearframeworks/cfh-search/actions/artifacts/13583034911/zip > "$env:RUNNER_TEMP\artifact.zip"
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\installer" | Out-Null
           Expand-Archive "$env:RUNNER_TEMP\artifact.zip" "$env:RUNNER_TEMP\installer"
           Get-FileHash "$env:RUNNER_TEMP\installer\CFH-Search-Setup.exe" -Algorithm SHA256 | Format-List
@@ -29,7 +29,11 @@ jobs:
           foreach($name in @('rg.exe','CFH-Search.ps1','CFH-Search.cmd','CFH-FORK.md','LICENSE-MIT','UNLICENSE','COPYING','THIRD-PARTY.txt')) { if (!(Test-Path "$dir\$name")) { throw "Installed file missing: $name" } }
           $testFolder="$env:RUNNER_TEMP\search test folder"; New-Item -ItemType Directory -Force $testFolder | Out-Null
           [IO.File]::WriteAllText("$testFolder\sample.txt",'A real needle is here')
-          $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -PassThru
+          $before=@(Get-Process powershell -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+          $launcher=Start-Process "$dir\CFH-Search.cmd" -PassThru
+          $app=$null
+          for($i=0;$i -lt 30;$i++){ $app=Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $before } | Select-Object -First 1; if($app){break}; Start-Sleep -Seconds 1 }
+          if(-not $app){throw 'Launcher did not start PowerShell'}
           try {
             Add-Type @"
           using System;
