@@ -1,0 +1,108 @@
+name: CFH Search Windows verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Test and build search engine
+        shell: pwsh
+        run: |
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust build failed' }
+      - name: Generate third-party license inventory
+        shell: pwsh
+        run: |
+          $url='https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-pc-windows-msvc.tar.gz'
+          Invoke-WebRequest "$url" -OutFile "$env:RUNNER_TEMP\about.tar.gz"
+          Invoke-WebRequest "$url.sha256" -OutFile "$env:RUNNER_TEMP\about.sha256"
+          $expected=((Get-Content "$env:RUNNER_TEMP\about.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual=(Get-FileHash "$env:RUNNER_TEMP\about.tar.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'License tool checksum mismatch' }
+          tar -xzf "$env:RUNNER_TEMP\about.tar.gz" -C "$env:RUNNER_TEMP"
+          $about=Get-ChildItem "$env:RUNNER_TEMP" -Filter cargo-about.exe -Recurse | Select-Object -First 1
+          if (-not $about) { throw 'License tool missing' }
+          & $about.FullName about generate about.hbs -o THIRD-PARTY.txt
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path THIRD-PARTY.txt)) { throw 'License inventory failed' }
+      - name: Build unsigned installer
+        shell: pwsh
+        run: |
+          $iss=@"
+          [Setup]
+          AppId=CFHSearch
+          AppName=CFH Search
+          AppVersion=0.1.0
+          AppPublisher=Coders for Humanity
+          DefaultDirName={localappdata}\Programs\CFH Search
+          DefaultGroupName=CFH Search
+          PrivilegesRequired=lowest
+          OutputDir=$env:RUNNER_TEMP\installer
+          OutputBaseFilename=CFH-Search-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          [Files]
+          Source: "$env:GITHUB_WORKSPACE\target\release\rg.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\CFH-Search.ps1"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\CFH-Search.cmd"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\CFH-FORK.md"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\UNLICENSE"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\COPYING"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "$env:GITHUB_WORKSPACE\THIRD-PARTY.txt"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{group}\CFH Search"; Filename: "{app}\CFH-Search.cmd"
+          "@
+          $iss | Set-Content "$env:RUNNER_TEMP\search.iss" -Encoding utf8
+          iscc "$env:RUNNER_TEMP\search.iss"
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+      - name: Install and test search interface
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir="$env:RUNNER_TEMP\installed"
+          $p=Start-Process "$env:RUNNER_TEMP\installer\CFH-Search-Setup.exe" -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dir") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Installer failed' }
+          foreach($name in @('rg.exe','CFH-Search.ps1','CFH-Search.cmd','CFH-FORK.md','LICENSE-MIT','UNLICENSE','COPYING','THIRD-PARTY.txt')) { if (!(Test-Path "$dir\$name")) { throw "Installed file missing: $name" } }
+          $testFolder="$env:RUNNER_TEMP\search test folder"; New-Item -ItemType Directory -Force $testFolder | Out-Null
+          [IO.File]::WriteAllText("$testFolder\sample.txt",'A real needle is here')
+          $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -WindowStyle Hidden -PassThru
+          try {
+            Add-Type -AssemblyName UIAutomationClient
+            $window=$null
+            for($i=0;$i -lt 30;$i++) {
+              if($app.HasExited) { throw 'App exited during startup' }
+              $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id)
+              $window=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
+              if($window) { break }; Start-Sleep -Seconds 1
+            }
+            if(-not $window) { throw 'Search window not available' }
+            function Find-Control($name) { $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name); return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$c) }
+            $folder=Find-Control 'Folder'; $query=Find-Control 'Text to find'; $button=Find-Control 'Search'; $output=Find-Control 'Search results'
+            if(-not $folder -or -not $query -or -not $button -or -not $output) { throw 'Required accessible controls unavailable' }
+            $folder.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($testFolder)
+            $query.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('needle')
+            $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $ok=$false
+            for($i=0;$i -lt 30;$i++) { $value=$output.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value; if($value -match 'sample\.txt:1:A real needle is here') { $ok=$true; break }; Start-Sleep -Seconds 1 }
+            if(-not $ok) { throw 'Expected GUI search result missing' }
+            Write-Output 'INSTALLED GUI SEARCH VERIFIED'
+          } finally { if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
+          $uninstaller=Get-ChildItem "$dir\unins*.exe" | Select-Object -First 1
+          if(-not $uninstaller) { throw 'Uninstaller missing' }
+          $p=Start-Process $uninstaller.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if($p.ExitCode -ne 0) { throw 'Uninstall failed' }
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: cfh-search-installer-unsigned
+          path: ${{ runner.temp }}\installer\CFH-Search-Setup.exe
+          if-no-files-found: error
