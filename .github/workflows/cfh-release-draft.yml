@@ -1,0 +1,28 @@
+name: Prepare CFH Search draft
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare draft from verified artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/clearframeworks/cfh-search/actions/artifacts/13582543648/zip > "$RUNNER_TEMP/artifact.zip"
+          unzip -q "$RUNNER_TEMP/artifact.zip" -d "$RUNNER_TEMP/package"
+          echo '97ccaf8f667f3eea15199294eeca94885cf1512363a19c16fc8d1f162de77fef  '"$RUNNER_TEMP/package/CFH-Search-Setup.exe" | sha256sum -c -
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          CFH Search is a free Windows app for finding literal text in files within a selected folder. It uses ripgrep 15.2.0 by Andrew Gallant and contributors, with a CFH graphical interface. Search reads files without editing them. Hidden, ignored, and binary files are excluded by ripgrep's defaults; results are limited to one million characters.
+
+          Download and run `CFH-Search-Setup.exe` to install for the current Windows user. The installer is unsigned, so Windows may show an unknown-publisher warning. The application requires Windows PowerShell and does not send searches to an online service.
+
+          This release was built from commit `a642f711421a5561d6e2c7f6f8f59c70050ea4fb`. Remote Windows checks covered installation, text search, long-result limits, invalid folders, stopping and restarting a search, and uninstalling. These checks do not guarantee the software is free of vulnerabilities or malware. The installer includes upstream and third-party license notices; ripgrep is available under the MIT License or the Unlicense.
+
+          Installer SHA-256: `97ccaf8f667f3eea15199294eeca94885cf1512363a19c16fc8d1f162de77fef`.
+          NOTES
+          gh release create cfh-search-0.1.0 "$RUNNER_TEMP/package/CFH-Search-Setup.exe" --repo clearframeworks/cfh-search --target a642f711421a5561d6e2c7f6f8f59c70050ea4fb --draft --title 'CFH Search 0.1.0' --notes-file "$RUNNER_TEMP/notes.md"
