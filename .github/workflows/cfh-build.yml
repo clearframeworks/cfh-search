@@ -80,7 +80,7 @@ jobs:
             $window=$null
             for($i=0;$i -lt 30;$i++) {
               if($app.HasExited) { throw 'App exited during startup' }
-              $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id)
+              $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id); $titleCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,"CFH Search"); $cond=New-Object System.Windows.Automation.AndCondition($pidCond,$titleCond)
               $window=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
               if($window) { break }; Start-Sleep -Seconds 1
             }
