@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: a642f711421a5561d6e2c7f6f8f59c70050ea4fb
+          ref: 4c29da767bb6efc99a1e807579c66c784cc2bf5b
           persist-credentials: false
       - name: Install OSV Scanner
         run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
