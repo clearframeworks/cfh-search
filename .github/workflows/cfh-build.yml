@@ -63,6 +63,12 @@ jobs:
           $iss | Set-Content "$env:RUNNER_TEMP\search.iss" -Encoding utf8
           iscc "$env:RUNNER_TEMP\search.iss"
           if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: cfh-search-installer-unsigned
+          path: ${{ runner.temp }}\installer\CFH-Search-Setup.exe
+          if-no-files-found: error
       - name: Install and test search interface
         shell: pwsh
         timeout-minutes: 3
@@ -98,9 +104,19 @@ jobs:
             public static void Click(IntPtr h) { SendMessage(h,245,IntPtr.Zero,IntPtr.Zero); }
           }
           "@
-            $window=[IntPtr]::Zero
-            for($i=0;$i -lt 30;$i++) { if($app.HasExited){throw 'App exited during startup'}; $window=[NativeSearchTest]::FindWindow($null,'CFH Search'); if($window -ne [IntPtr]::Zero){break}; Start-Sleep -Seconds 1 }
-            if($window -eq [IntPtr]::Zero){throw 'Search form missing'}
+            Add-Type -AssemblyName UIAutomationClient
+            $element=$null
+            for($i=0;$i -lt 30;$i++) {
+              if($app.HasExited){throw 'App exited during startup'}
+              $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id)
+              $titleCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'CFH Search')
+              $cond=New-Object System.Windows.Automation.AndCondition($pidCond,$titleCond)
+              $element=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
+              if($element){break}; Start-Sleep -Seconds 1
+            }
+            if(-not $element){throw 'Search form missing'}
+            $window=[IntPtr]$element.Current.NativeWindowHandle
+            if($window -eq [IntPtr]::Zero){throw 'Search form has no native handle'}
             $children=[NativeSearchTest]::Children($window)
             $edits=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'EDIT' })
             $buttons=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'BUTTON' })
@@ -130,9 +146,3 @@ jobs:
           if(-not $uninstaller) { throw 'Uninstaller missing' }
           $p=Start-Process $uninstaller.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
           if($p.ExitCode -ne 0) { throw 'Uninstall failed' }
-      - name: Upload unsigned installer
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: cfh-search-installer-unsigned
-          path: ${{ runner.temp }}\installer\CFH-Search-Setup.exe
-          if-no-files-found: error
