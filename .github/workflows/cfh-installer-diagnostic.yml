@@ -1,0 +1,111 @@
+name: CFH Search installer diagnostic
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch exact previously built installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/clearframeworks/cfh-search/actions/artifacts/13582543648/zip > "$env:RUNNER_TEMP\artifact.zip"
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\installer" | Out-Null
+          Expand-Archive "$env:RUNNER_TEMP\artifact.zip" "$env:RUNNER_TEMP\installer"
+          Get-FileHash "$env:RUNNER_TEMP\installer\CFH-Search-Setup.exe" -Algorithm SHA256 | Format-List
+      - name: Install and test search interface
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir="$env:RUNNER_TEMP\installed"
+          $p=Start-Process "$env:RUNNER_TEMP\installer\CFH-Search-Setup.exe" -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dir") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Installer failed' }
+          foreach($name in @('rg.exe','CFH-Search.ps1','CFH-Search.cmd','CFH-FORK.md','LICENSE-MIT','UNLICENSE','COPYING','THIRD-PARTY.txt')) { if (!(Test-Path "$dir\$name")) { throw "Installed file missing: $name" } }
+          $testFolder="$env:RUNNER_TEMP\search test folder"; New-Item -ItemType Directory -Force $testFolder | Out-Null
+          [IO.File]::WriteAllText("$testFolder\sample.txt",'A real needle is here')
+          $app=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$dir\CFH-Search.ps1`"") -PassThru
+          try {
+            Add-Type @"
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class NativeSearchTest {
+            public delegate bool Callback(IntPtr h, IntPtr p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls,string title);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,Callback c,IntPtr p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,string l);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,StringBuilder l);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
+            [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+            public static List<IntPtr> Children(IntPtr h) { var list=new List<IntPtr>(); EnumChildWindows(h,(x,p)=>{ list.Add(x); return true; },IntPtr.Zero); return list; }
+            public static string Class(IntPtr h) { var b=new StringBuilder(256); GetClassName(h,b,b.Capacity); return b.ToString(); }
+            public static string Text(IntPtr h) { var b=new StringBuilder(1000002); SendMessage(h,13,(IntPtr)b.Capacity,b); return b.ToString(); }
+            public static void Set(IntPtr h,string s) { SendMessage(h,12,IntPtr.Zero,s); }
+            public static void Click(IntPtr h) { SendMessage(h,245,IntPtr.Zero,IntPtr.Zero); }
+          }
+          "@
+            Add-Type -AssemblyName UIAutomationClient
+            $element=$null
+            for($i=0;$i -lt 30;$i++) {
+              if($app.HasExited){throw 'App exited during startup'}
+              $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id)
+              $titleCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'CFH Search')
+              $cond=New-Object System.Windows.Automation.AndCondition($pidCond,$titleCond)
+              $element=[System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
+              if($element){break}; Start-Sleep -Seconds 1
+            }
+            if(-not $element){throw 'Search form missing'}
+            $window=[IntPtr]$element.Current.NativeWindowHandle
+            if($window -eq [IntPtr]::Zero){throw 'Search form has no native handle'}
+            $children=[NativeSearchTest]::Children($window)
+            $edits=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'EDIT' })
+            $buttons=@($children | Where-Object { [NativeSearchTest]::Class($_) -match 'BUTTON' })
+            $button=$buttons | Where-Object { [NativeSearchTest]::Text($_) -eq 'Search' } | Select-Object -First 1
+            if($edits.Count -ne 3 -or -not $button) { throw "Unexpected controls: edits=$($edits.Count), buttons=$($buttons.Count)" }
+            $folder=$edits[0]; $query=$edits[1]; $output=$edits[2]
+            [NativeSearchTest]::Set($folder,$testFolder); [NativeSearchTest]::Set($query,'needle'); [NativeSearchTest]::Click($button)
+            function Wait-Search { for($i=0;$i -lt 60;$i++) { Start-Sleep -Seconds 1; if([NativeSearchTest]::IsWindowEnabled($button)) { return } }; throw 'Search did not finish' }
+            Wait-Search
+            if([NativeSearchTest]::Text($output) -notmatch 'sample\.txt:1:A real needle is here'){ throw 'Expected GUI search result missing' }
+            [IO.File]::WriteAllText("$testFolder\long.txt", ('needle' + ('x' * 1200000)))
+            [NativeSearchTest]::Click($button); Wait-Search
+            $value=[NativeSearchTest]::Text($output)
+            if($value.Length -gt 1000000 -or $value.Length -lt 999000){ throw "Output cap failed: $($value.Length)" }
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'Search finished; results limited to 1 million characters.'){ throw 'Truncation notice missing' }
+            [NativeSearchTest]::Set($folder,"$testFolder\missing"); [NativeSearchTest]::Click($button)
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'Choose an existing folder.'){ throw 'Invalid-folder feedback missing' }
+            [NativeSearchTest]::Set($folder,$testFolder); [NativeSearchTest]::Set($query,'nothing matches this query 735'); [NativeSearchTest]::Click($button); Wait-Search
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'No matches found.'){ throw 'No-match recovery failed' }
+            Write-Output 'LARGE LINE BOUND AND ERROR RECOVERY VERIFIED'
+            $stop=$buttons | Where-Object { [NativeSearchTest]::Text($_) -eq 'Stop' } | Select-Object -First 1
+            if(-not $stop) { throw 'Stop button missing' }
+            $large="$testFolder\slow.bin"; $block=New-Object byte[] (1024*1024); [Array]::Fill($block,[byte]65)
+            $stream=[IO.File]::Create($large); try { for($i=0;$i -lt 512;$i++){ $stream.Write($block,0,$block.Length) } } finally { $stream.Dispose() }
+            [NativeSearchTest]::Set($query,'a query that will not match any data 239')
+            [NativeSearchTest]::Click($button)
+            if(-not [NativeSearchTest]::IsWindowEnabled($stop)){ throw 'Stop was not available during search' }
+            [NativeSearchTest]::Click($stop); Wait-Search
+            $texts=@($children | ForEach-Object { [NativeSearchTest]::Text($_) })
+            if($texts -notcontains 'Search stopped or could not finish. See details below.'){ throw 'Cancellation feedback missing' }
+            Remove-Item $large -Force
+            [NativeSearchTest]::Set($query,'needle'); [NativeSearchTest]::Click($button); Wait-Search
+            if([NativeSearchTest]::Text($output) -notmatch 'sample\.txt:1:A real needle is here'){ throw 'Search did not recover after cancellation' }
+            Write-Output 'STOP AND RESTART VERIFIED'
+            Write-Output 'INSTALLED GUI SEARCH VERIFIED'
+          } finally { if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
+          $uninstaller=Get-ChildItem "$dir\unins*.exe" | Select-Object -First 1
+          if(-not $uninstaller) { throw 'Uninstaller missing' }
+          $p=Start-Process $uninstaller.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if($p.ExitCode -ne 0) { throw 'Uninstall failed' }
