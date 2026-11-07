@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Text;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 public sealed class CfhSearchForm : Form {
@@ -46,6 +47,18 @@ public sealed class CfhSearchForm : Form {
         }
         b.Append('\\',slashes*2); b.Append('\"'); return b.ToString();
     }
+    async Task Drain(StreamReader reader) {
+        char[] buffer = new char[4096];
+        int count;
+        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0) {
+            lock (gate) {
+                int available = 1000000 - collected.Length;
+                int take = Math.Min(available, count);
+                if (take > 0) collected.Append(buffer, 0, take);
+                if (take < count) truncated = true;
+            }
+        }
+    }
     void StartSearch(object sender, EventArgs e) {
         if (!Directory.Exists(folder.Text)) { status.Text="Choose an existing folder."; return; }
         if (String.IsNullOrWhiteSpace(query.Text)) { status.Text="Enter text to find."; return; }
@@ -53,11 +66,22 @@ public sealed class CfhSearchForm : Form {
         lock(gate) { collected.Clear(); truncated=false; }
         results.Clear(); search.Enabled=false; cancel.Enabled=true; status.Text="Searching...";
         worker=new Process(); worker.StartInfo=new ProcessStartInfo { FileName=executable, Arguments="--line-number --fixed-strings --no-heading --color never -- " + Quote(query.Text) + " " + Quote(folder.Text), UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true };
-        worker.EnableRaisingEvents=true;
-        worker.OutputDataReceived += (s,a) => { if(a.Data==null)return; lock(gate) { if(collected.Length<1000000) collected.AppendLine(a.Data); else truncated=true; } };
-        worker.ErrorDataReceived += (s,a) => { if(a.Data==null)return; lock(gate) { if(collected.Length<1000000) collected.AppendLine("Error: "+a.Data); else truncated=true; } };
-        worker.Exited += (s,a) => { int code=worker.ExitCode; worker.WaitForExit(); string output; bool cut; lock(gate) {output=collected.ToString();cut=truncated;} if(IsDisposed)return; BeginInvoke((Action)(() => { results.Text=output; search.Enabled=true; cancel.Enabled=false; status.Text=code==0 ? (cut ? "Search finished; results limited to 1 MB." : "Search finished.") : code==1 ? "No matches found." : "Search stopped or could not finish. See details below."; })); };
-        try { worker.Start(); worker.BeginOutputReadLine(); worker.BeginErrorReadLine(); }
+        try {
+            worker.Start();
+            Process running = worker;
+            Task stdout = Drain(running.StandardOutput);
+            Task stderr = Drain(running.StandardError);
+            Task.Run(async () => {
+                running.WaitForExit();
+                await Task.WhenAll(stdout, stderr);
+                int code = running.ExitCode;
+                string output; bool cut;
+                lock(gate) { output=collected.ToString(); cut=truncated; }
+                if(IsDisposed || Disposing) return;
+                try { BeginInvoke((Action)(() => { results.Text=output; search.Enabled=true; cancel.Enabled=false; status.Text=code==0 ? (cut ? "Search finished; results limited to 1 million characters." : "Search finished.") : code==1 ? "No matches found." : "Search stopped or could not finish. See details below."; })); }
+                catch(InvalidOperationException) { }
+            });
+        }
         catch(Exception ex) { search.Enabled=true; cancel.Enabled=false; status.Text="Could not start search: "+ex.Message; }
     }
     void StopSearch(object sender, EventArgs e) { if(worker != null && !worker.HasExited) worker.Kill(); }
